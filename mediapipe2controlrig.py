@@ -34,6 +34,9 @@ t_pose_rotators_offsets = {
     "lowerarm_l_fk_ctrl": [0.0, 0.0, -35.0],
 }
 
+def _meter_to_centimeter(v: np.array):
+    return v[0] * 100, v[1] * 100, v[2] * 100
+
 def _quat_between(v_from: np.ndarray, v_to: np.ndarray) -> np.ndarray:
     """
     Compute the unit quaternion that rotates v_from onto v_to.
@@ -197,16 +200,17 @@ def calculate_lowerarm_l_fk_ctrl_rotators(keypoints: np.ndarray) -> List[float]:
 def _build_rotation_from_axes(x_axis, z_axis):
     x = x_axis / (np.linalg.norm(x_axis) + 1e-8)
     z = z_axis / (np.linalg.norm(z_axis) + 1e-8)
-    y = np.cross(z, x)                     # UE 左手系 (+X左, +Y前, +Z上)
-    R = np.column_stack([x, y, z])         # 3×3
-    # 轉成四元數 (w,x,y,z)
+
+    # ★ 左手系：y = x × z  (而不是 z × x)
+    y = np.cross(x, z)
+
+    R = np.column_stack([x, y, z])
     w = np.sqrt(1.0 + R[0,0] + R[1,1] + R[2,2]) / 2.0
-    denom = 4.0 * w
     q = np.array([
         w,
-        (R[2,1] - R[1,2]) / denom,
-        (R[0,2] - R[2,0]) / denom,
-        (R[1,0] - R[0,1]) / denom
+        (R[2,1] - R[1,2]) / (4*w),
+        (R[0,2] - R[2,0]) / (4*w),
+        (R[1,0] - R[0,1]) / (4*w)
     ])
     return q
 
@@ -217,22 +221,26 @@ def calculate_leg_r_ik_ctrls(keypoints: np.ndarray):
     F = keypoints[PoseLandmark.RIGHT_FOOT_INDEX.value]
     B = keypoints[PoseLandmark.RIGHT_HEEL.value]
 
-    foot_pos = A
-    q_foot = _build_rotation_from_axes(F - A, A - B)
+    x_axis = -(F - A)
+    z_axis = A - B
+    q_foot = _build_rotation_from_axes(x_axis, z_axis)
     foot_rot = _quat_to_euler_xyz(q_foot)
 
-    n = np.cross(H - K, A - K)
+    n = np.cross(A - K, H - K)
     n /= np.linalg.norm(n) + 1e-8
     leg_len = np.linalg.norm(H - A)
     pv_pos = K + n * 0.5 * leg_len
 
+    foot_pos = _meter_to_centimeter(A.tolist())
+    pv_pos   = _meter_to_centimeter(pv_pos.tolist())
+
     return {
         "foot_r_ik_ctrl": {
-            "location": foot_pos.tolist(),
+            "location": foot_pos,
             "rotator":  foot_rot
         },
         "leg_r_pv_ik_ctrl": {
-            "location": pv_pos.tolist()
+            "location": pv_pos
         }
     }
 
@@ -242,5 +250,10 @@ def calculate_control_rig_rotators(keypoints: np.ndarray) -> Dict[str, List[floa
     rotator["lowerarm_r_fk_ctrl"] = calculate_lowerarm_r_fk_ctrl_rotators(keypoints)
     rotator["upperarm_l_fk_ctrl"] = calculate_upperarm_l_fk_ctrl_rotators(keypoints)
     rotator["lowerarm_l_fk_ctrl"] = calculate_lowerarm_l_fk_ctrl_rotators(keypoints)
+
+    leg_r_ctrls = calculate_leg_r_ik_ctrls(keypoints)
+    rotator["foot_r_ik_ctrl"] = leg_r_ctrls["foot_r_ik_ctrl"]["rotator"]
+    rotator["foot_r_ik_ctrl_pos"] = leg_r_ctrls["foot_r_ik_ctrl"]["location"]
+    rotator["leg_r_pv_ik_ctrl_pos"] = leg_r_ctrls["leg_r_pv_ik_ctrl"]["location"]
 
     return rotator

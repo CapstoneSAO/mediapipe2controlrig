@@ -97,10 +97,10 @@ def play_frames_from_preprocessed_pose(pose_visualizer: Pose3DVisualizer, frames
 # 🏁  Main demo
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    FILE = "data/N_t-pose_with_normal_action.csv"
+    FILE = "data/N_foot_with_normal_action.csv"
 
     preprocess_pose = preprocess_pose_file(FILE)
-    save_preprocessed_pose_to_file("data/cache/N_t-pose_with_normal_action.json", preprocess_pose)
+    save_preprocessed_pose_to_file("data/cache/N_foot_with_normal_action.json", preprocess_pose)
 
     ue_socket = create_unreal_sender_socket()
     visualizer = Pose3DVisualizer()
