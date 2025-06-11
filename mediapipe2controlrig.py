@@ -318,10 +318,16 @@ def solve_two_bone_IK(S,T,L1,L2,shoulder_q,B_local,torso_right=np.array([0,1,0])
     Dn  = D/(d+1e-8)
 
     PV  = v_norm(q_mul(shoulder_q, np.array([0,*B_local]))[1:])
-    if abs(Dn@PV)>0.999:  PV=np.array([0,0,1])
+    if abs(Dn@PV)>0.95:
+        alt = np.array([0,0,1]) if abs(Dn[2]) < 0.8 else np.array([0,1,0])
+        PV  = v_norm(np.cross(Dn, alt))
     N   = v_norm(np.cross(Dn,PV))
     if N@torso_right<0:   N=-N
     Pdir= np.cross(N,Dn)
+
+    if Pdir[2] > 0:                      # 若 z 分量 >0 → 肘朝上
+        N   = -N                         #   → 翻平面法線
+        Pdir = -Pdir  
 
     a   = (L1*L1-L2*L2+d*d)/(2*d)
     h2  = L1*L1-a*a; h = np.sqrt(max(h2,0))
@@ -342,10 +348,47 @@ def solve_two_bone_IK(S,T,L1,L2,shoulder_q,B_local,torso_right=np.array([0,1,0])
     X=upper_dir;  Z=v_norm(np.cross(X,upY_world)); Y=np.cross(Z,X)
     M=np.column_stack([X,Y,Z])   # chest→upperLocal
     fore_L = M.T@fore_dir
+    # if fore_L[0] < 0: fore_L = -fore_L      # ← 新增
+        # ----- ±號遲滯：只有 X < -0.25 才翻到負側；X > +0.25 才翻回 -----
+    side   = 'R' if torso_right[0] < 0 else 'L'    # 很簡單分左右
+    THRESH = 0.25
+    if not hasattr(solve_two_bone_IK, "_sign_state"):
+        solve_two_bone_IK._sign_state = {"R": +1, "L": +1}   # 初始正向
+    sign = solve_two_bone_IK._sign_state[side]
+    if sign > 0 and fore_L[0] < -THRESH:
+        sign = -1
+    elif sign < 0 and fore_L[0] >  THRESH:
+        sign = +1
+    solve_two_bone_IK._sign_state[side] = sign
+    if sign < 0:
+        fore_L = -fore_L
     q_rel  = q_between(np.array([1,0,0]), fore_L)
     q_fore = q_mul(q_rel, q_axis_angle(np.array([1,0,0]), -35))       # 前臂偏移
 
     return q_up, q_fore
+
+_prev_q_fore = {"R": None, "L": None}
+
+def keep_same_hemisphere(q: np.ndarray, side:str) -> np.ndarray:
+    """保證本幀四元數與上一幀同半球 (dot>0)"""
+    global _prev_q_fore
+    q_prev = _prev_q_fore[side]
+    if q_prev is not None and np.dot(q, q_prev) < 0.0:
+        q = -q
+    _prev_q_fore[side] = q.copy()
+    return q
+
+def swing_twist_lhs(q: np.ndarray, twist_axis=np.array([1.,0.,0.])):
+    """
+    將四元數 q 分解為 swing * twist ，且 twist 是繞 twist_axis 旋轉。
+    回傳 (swing, twist)
+    """
+    w,x,y,z = q
+    proj = twist_axis * np.dot([x,y,z], twist_axis)     # 投影到 twist 軸
+    twist = np.array([w, *proj])
+    twist = twist / (np.linalg.norm(twist)+1e-8)
+    swing = _quat_mul(q, _quat_inv(twist))
+    return swing, twist
 
 def calculate_lowerarm_l_fk_ctrl_rotators(kp: np.ndarray) -> List[float]:
     S = kp[PoseLandmark.LEFT_SHOULDER.value]   # Shoulder
