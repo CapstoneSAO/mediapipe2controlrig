@@ -4,11 +4,13 @@ from copy import deepcopy
 import numpy
 import numpy as np
 from mediapipe.python.solutions.pose import PoseLandmark
+from loguru import logger
 
 from utils import add_in_element_wise
 
 default_rotators = {
         "body_ctrl":          [0.0, 0.0, 0.0],
+        "body_ctrl_pos":     [0.0, 0.0, 0.0],  # Position for Body Control (offset)
         "spine_01_ctrl":      [0.0, 0.0, 0.0],
         "head_ctrl":          [0.0, 0.0, 0.0],
         "upperarm_r_fk_ctrl": [0.0, 0.0, 0.0],
@@ -91,23 +93,36 @@ def _quat_to_euler_xyz(q: np.ndarray) -> List[float]:
 def _build_torso_basis(keypoints: np.ndarray):
     LS = keypoints[PoseLandmark.LEFT_SHOULDER.value]
     RS = keypoints[PoseLandmark.RIGHT_SHOULDER.value]
+    M_S = LS + RS
+
     RH = keypoints[PoseLandmark.RIGHT_HIP.value]
+    LH = keypoints[PoseLandmark.LEFT_HIP.value]
+
+    HIP = (RH + LH) / 2
 
     x_axis = LS - RS
     x_axis /= np.linalg.norm(x_axis) + 1e-8
 
-    plane_normal = np.cross(x_axis, RS - RH)
-    plane_normal /= np.linalg.norm(plane_normal) + 1e-8
-    y_axis = plane_normal
-
-    z_axis = np.cross(y_axis, x_axis)
+    z_axis = M_S - HIP
     z_axis /= np.linalg.norm(z_axis) + 1e-8
+
+    y_axis = np.cross(x_axis, z_axis)
+    y_axis /= np.linalg.norm(y_axis) + 1e-8
 
     return np.vstack([x_axis, -y_axis, z_axis])
 
 def calculate_upperarm_r_fk_ctrl_rotators(keypoints: np.ndarray) -> List[float]:
     sh = numpy.array(keypoints[PoseLandmark.RIGHT_SHOULDER.value])
     el = numpy.array(keypoints[PoseLandmark.RIGHT_ELBOW.value])
+
+    _T = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+        ]
+    )
+
     v_cur = el - sh
     v_cur /= np.linalg.norm(v_cur) + 1e-8
 
@@ -115,6 +130,7 @@ def calculate_upperarm_r_fk_ctrl_rotators(keypoints: np.ndarray) -> List[float]:
     # v_cur = T.T @ v_cur  # 轉進胸腔空間
 
     v_ref = np.array([-1.0, 0.0, 0.0])
+
 
     q = _quat_between(v_ref, v_cur)
 
@@ -232,7 +248,14 @@ def calculate_leg_r_ik_ctrls(keypoints: np.ndarray):
     pv_pos = K + n * 0.5 * leg_len
 
     foot_pos = _meter_to_centimeter(A.tolist())
+    foot_pos_x, foot_pos_y, foot_pos_z = foot_pos
+    foot_pos_y = -foot_pos_y
+    foot_pos = (foot_pos_x, foot_pos_y, foot_pos_z)
+
     pv_pos   = _meter_to_centimeter(pv_pos.tolist())
+    pv_pos_x, pv_pos_y, pv_pos_z = pv_pos
+    pv_pos_y = -pv_pos_y
+    pv_pos = (pv_pos_x, pv_pos_y, pv_pos_z)
 
     return {
         "foot_r_ik_ctrl": {
@@ -244,16 +267,64 @@ def calculate_leg_r_ik_ctrls(keypoints: np.ndarray):
         }
     }
 
-def calculate_control_rig_rotators(keypoints: np.ndarray) -> Dict[str, List[float]]:
+def calculate_leg_l_ik_ctrls(keypoints: np.ndarray):
+    H = keypoints[PoseLandmark.LEFT_HIP.value]
+    K = keypoints[PoseLandmark.LEFT_KNEE.value]
+    A = keypoints[PoseLandmark.LEFT_ANKLE.value]
+    F = keypoints[PoseLandmark.LEFT_FOOT_INDEX.value]
+    B = keypoints[PoseLandmark.LEFT_HEEL.value]
+
+    x_axis = (F - A)
+    z_axis = A - B
+    q_foot = _build_rotation_from_axes(x_axis, z_axis)
+    foot_rot = _quat_to_euler_xyz(q_foot)
+
+    n = np.cross(A - K, H - K)
+    n /= np.linalg.norm(n) + 1e-8
+    leg_len = np.linalg.norm(H - A)
+    pv_pos = K + n * 0.5 * leg_len
+
+    foot_pos = _meter_to_centimeter(A.tolist())
+    foot_pos_x, foot_pos_y, foot_pos_z = foot_pos
+    foot_pos_y = -foot_pos_y
+    foot_pos = (foot_pos_x, foot_pos_y, foot_pos_z)
+
+    pv_pos   = _meter_to_centimeter(pv_pos.tolist())
+    pv_pos_x, pv_pos_y, pv_pos_z = pv_pos
+    pv_pos_y = -pv_pos_y
+    pv_pos = (pv_pos_x, pv_pos_y, pv_pos_z)
+
+    return {
+        "foot_l_ik_ctrl": {
+            "location": foot_pos,
+            "rotator":  foot_rot
+        },
+        "leg_l_pv_ik_ctrl": {
+            "location": pv_pos
+        }
+    }
+
+def calculate_control_rig_rotators(keypoints: np.ndarray, datum_points: np.array=None) -> Dict[str, List[float]]:
     rotator = default_rotators.copy()
+
     rotator["upperarm_r_fk_ctrl"] = calculate_upperarm_r_fk_ctrl_rotators(keypoints)
     rotator["lowerarm_r_fk_ctrl"] = calculate_lowerarm_r_fk_ctrl_rotators(keypoints)
     rotator["upperarm_l_fk_ctrl"] = calculate_upperarm_l_fk_ctrl_rotators(keypoints)
     rotator["lowerarm_l_fk_ctrl"] = calculate_lowerarm_l_fk_ctrl_rotators(keypoints)
 
     leg_r_ctrls = calculate_leg_r_ik_ctrls(keypoints)
-    rotator["foot_r_ik_ctrl"] = leg_r_ctrls["foot_r_ik_ctrl"]["rotator"]
+    # rotator["foot_r_ik_ctrl"] = leg_r_ctrls["foot_r_ik_ctrl"]["rotator"]
     rotator["foot_r_ik_ctrl_pos"] = leg_r_ctrls["foot_r_ik_ctrl"]["location"]
-    rotator["leg_r_pv_ik_ctrl_pos"] = leg_r_ctrls["leg_r_pv_ik_ctrl"]["location"]
+    # rotator["leg_r_pv_ik_ctrl_pos"] = leg_r_ctrls["leg_r_pv_ik_ctrl"]["location"]
+    leg_l_ctrls = calculate_leg_l_ik_ctrls(keypoints)
+    # rotator["foot_l_ik_ctrl"] = leg_l_ctrls["foot_l_ik_ctrl"]["rotator"]
+    rotator["foot_l_ik_ctrl_pos"] = leg_l_ctrls["foot_l_ik_ctrl"]["location"]
+    # rotator["leg_l_pv_ik_ctrl_pos"] = leg_l_ctrls["leg_l_pv_ik_ctrl"]["location"]
+
+    if datum_points is not None:
+        hip = keypoints[PoseLandmark.LEFT_HIP.value] + keypoints[PoseLandmark.RIGHT_HIP.value]
+        hip /= 2.0
+        hip_z_offset = (hip[2] - datum_points[2]) * 100 # Convert to centimeters
+        rotator["body_ctrl_pos"] = (0, 0, hip_z_offset)
 
     return rotator
