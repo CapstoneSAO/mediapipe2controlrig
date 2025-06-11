@@ -48,3 +48,10 @@ def mediapipe_to_unreal(keypoints: np.ndarray, facing: List[str] = ("-X", "+Z", 
 
     return np.array([[-z, x, y] for x, y, z in keypoints])
 
+def get_datum_point(keypoints: np.ndarray, datum_point: str = "hip") -> np.ndarray:
+    if datum_point == "hip":
+        return (keypoints[PoseLandmark.LEFT_HIP.value] + keypoints[PoseLandmark.RIGHT_HIP.value]) / 2.0
+    elif datum_point == "ground":
+        return keypoints[GROUND_PTS].mean(axis=0)
+    else:
+        raise ValueError(f"Unknown datum point: {datum_point}")

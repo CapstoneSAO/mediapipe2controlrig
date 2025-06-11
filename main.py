@@ -14,6 +14,7 @@ from utils import (
     deflatten,
     normalize_frame,
     mediapipe_to_unreal,
+    get_datum_point,
     PoseObject,
     ILLEGAL_PTS_33_KEYPOINTS
 )
@@ -31,18 +32,22 @@ def load_pose_frames_from_file(path: str, ignore_illegal=True) -> List[np.ndarra
             if ignore_illegal and (keypoints == ILLEGAL_PTS_33_KEYPOINTS):
                 logger.warning(f"Skipping illegal keypoints: {keypoints}")
                 continue
-            logger.debug(f"Loaded keypoints: {keypoints}")
+            # logger.debug(f"Loaded keypoints: {keypoints}")
             frames.append(np.array(keypoints, dtype=float))
     return frames
 
 def preprocess_pose_file(path: str) -> List[Dict[str, Any]]:
     pose_frames = load_pose_frames_from_file(path)
     processed_pose: List[Dict[str, Any]] = []
+    hip_datum_points = None
     for index, pose_frame in enumerate(pose_frames):
         normalized_keypoints, hip_offset, ground_offset = normalize_frame(pose_frame)
         unreal_keypoints = mediapipe_to_unreal(normalized_keypoints)
+        if hip_datum_points is None:
+            logger.info(f"Hip datum points initialize: {hip_datum_points}")
+            hip_datum_points = get_datum_point(unreal_keypoints, datum_point="hip")
 
-        control_rig_rotators = calculate_control_rig_rotators(unreal_keypoints) # Using unreal coordinates
+        control_rig_rotators = calculate_control_rig_rotators(unreal_keypoints, datum_points=hip_datum_points) # Using unreal coordinates
 
         payload = {"ControlRigRotators": control_rig_rotators, "ControlRig": control_rig_rotators}
         packet = PoseObject(payload).packet
@@ -55,7 +60,8 @@ def preprocess_pose_file(path: str) -> List[Dict[str, Any]]:
                 "hip_offset": hip_offset,
                 "ground_offset": ground_offset,
                 "frame_index": index,
-                "unreal_keypoints": unreal_keypoints.tolist()
+                "unreal_keypoints": unreal_keypoints.tolist(),
+                "hip_datum_points": hip_datum_points.tolist(),
             }
         )
     return processed_pose
@@ -97,10 +103,10 @@ def play_frames_from_preprocessed_pose(pose_visualizer: Pose3DVisualizer, frames
 # 🏁  Main demo
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    FILE = "data/N_foot_with_normal_action.csv"
+    FILE = "data/N_hip_with_normal_action.csv"
 
     preprocess_pose = preprocess_pose_file(FILE)
-    save_preprocessed_pose_to_file("data/cache/N_foot_with_normal_action.json", preprocess_pose)
+    save_preprocessed_pose_to_file("data/cache/N_hip_with_normal_action.json", preprocess_pose)
 
     ue_socket = create_unreal_sender_socket()
     visualizer = Pose3DVisualizer()
