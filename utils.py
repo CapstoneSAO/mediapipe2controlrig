@@ -1,9 +1,16 @@
 from typing import Dict, Any, List
-import json
 import struct
+import asyncio
+import json
+import socket
 
 import numpy as np
 from mediapipe.python.solutions.pose import PoseLandmark
+from loguru import logger
+
+CAMERA_HOST = "0.0.0.0"
+CAMERA_PORT = 12346
+
 
 def deflatten(flat: List[float]) -> List[List[float]]:
     return [flat[i : i + 3] for i in range(0, len(flat), 3) if i + 2 < len(flat)]
@@ -55,3 +62,35 @@ def get_datum_point(keypoints: np.ndarray, datum_point: str = "hip") -> np.ndarr
         return keypoints[GROUND_PTS].mean(axis=0)
     else:
         raise ValueError(f"Unknown datum point: {datum_point}")
+
+
+
+def create_camera_socket(host=CAMERA_HOST, recv_port=CAMERA_PORT):
+    """Create a non-blocking UDP socket for receiving camera data."""
+
+    _socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    _socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    _socket.bind((host, recv_port))
+    _socket.setblocking(False)
+    print(f"[Camera] UDP bound @ {host}:{recv_port} (non-blocking)")
+
+    return _socket
+
+if __name__ == "__main__":
+    camera_socket = create_camera_socket()
+    while True:
+        try:
+            data, _ = camera_socket.recvfrom(65536)
+        except BlockingIOError:
+            continue
+        except Exception as e:
+            print("[Camera] recv err:", e)
+            continue
+
+        try:
+            msg = json.loads(data.decode())
+            kp = np.asarray(msg["keypoints_3d"], dtype=msg["dtype"])
+            kp = kp.reshape(msg["shape"])
+        except Exception as e:
+            print("[Camera] JSON parse err:", e)
+            continue
