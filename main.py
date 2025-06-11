@@ -14,6 +14,7 @@ from utils import (
     deflatten,
     normalize_frame,
     mediapipe_to_unreal,
+    create_camera_socket,
     get_datum_point,
     PoseObject,
     ILLEGAL_PTS_33_KEYPOINTS
@@ -99,16 +100,78 @@ def play_frames_from_preprocessed_pose(pose_visualizer: Pose3DVisualizer, frames
                     return
         looping = repeat
 
+def play_frame_from_udp(camera_socket, unreal_socket=None):
+    hip_datum_points = None
+    while True:
+        try:
+            data, _ = camera_socket.recvfrom(65536)
+        except BlockingIOError:
+            continue
+        except Exception as e:
+            print("[Camera] recv err:", e)
+            continue
+
+        try:
+            msg = json.loads(data.decode())
+            keypoints = np.asarray(msg["keypoints_3d"], dtype=msg["dtype"]).reshape((-1, 3))
+
+            normalized_keypoints, hip_offset, ground_offset = normalize_frame(keypoints)
+            unreal_keypoints = mediapipe_to_unreal(normalized_keypoints)
+            if hip_datum_points is None:
+                logger.info(f"Hip datum points initialize: {hip_datum_points}")
+                hip_datum_points = get_datum_point(unreal_keypoints, datum_point="hip")
+
+            control_rig_rotators = calculate_control_rig_rotators(unreal_keypoints,
+                                                                  datum_points=hip_datum_points)  # Using unreal coordinates
+
+            payload = {"ControlRigRotators": control_rig_rotators, "ControlRig": control_rig_rotators}
+            logger.info(f"Control Rig Rotators: {control_rig_rotators}")
+            packet = PoseObject(payload).packet
+
+            if unreal_socket:
+                try:
+                    unreal_socket.sendall(packet)
+                except Exception as e:
+                    print("[Camera] Error sending data to Unreal:", e)
+                    unreal_socket.close()
+                    return
+
+        except Exception as e:
+            print("[Camera] JSON parse err:", e)
+            continue
+
 # ---------------------------------------------------------------------------
 # 🏁  Main demo
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    FILE = "data/N_hip_with_normal_action.csv"
+    import sys
+    mode = sys.argv[1] if len(sys.argv) > 1 else "play"
 
-    preprocess_pose = preprocess_pose_file(FILE)
-    save_preprocessed_pose_to_file("data/cache/N_hip_with_normal_action.json", preprocess_pose)
+    if mode not in ["play", "preprocess"]:
+        print("Usage: python main.py [play|preprocess]")
+        sys.exit(1)
 
-    ue_socket = create_unreal_sender_socket()
-    visualizer = Pose3DVisualizer()
+    if mode == "play":
+        camera_socket = create_camera_socket()
+        unreal_socket = create_unreal_sender_socket()
 
-    play_frames_from_preprocessed_pose(visualizer, preprocess_pose, fps=240, repeat=True, socket=ue_socket)
+        play_frame_from_udp(camera_socket, unreal_socket)
+
+        camera_socket.close()
+        unreal_socket.close()
+
+    elif mode == "preprocess":
+        FILE = "data/N_hand_cros.csv"
+
+        preprocess_pose = preprocess_pose_file(FILE)
+        save_preprocessed_pose_to_file("data/cache/N_hand_cros.json", preprocess_pose)
+
+        ue_socket = create_unreal_sender_socket()
+        visualizer = Pose3DVisualizer()
+
+        play_frames_from_preprocessed_pose(visualizer, preprocess_pose, fps=240, repeat=True, socket=ue_socket)
+
+        ue_socket.close()
+
+
+
