@@ -145,7 +145,7 @@ def play_frame_from_udp(camera_socket, unreal_socket=None):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
-    mode = sys.argv[1] if len(sys.argv) > 1 else "play"
+    mode = sys.argv[1] if len(sys.argv) > 1 else "preprocess"
 
     if mode not in ["play", "preprocess"]:
         print("Usage: python main.py [play|preprocess]")
@@ -161,10 +161,10 @@ if __name__ == "__main__":
         unreal_socket.close()
 
     elif mode == "preprocess":
-        FILE = "data/N_hand_cros.csv"
+        FILE = "data/N_action_0.csv"
 
         preprocess_pose = preprocess_pose_file(FILE)
-        save_preprocessed_pose_to_file("data/cache/N_hand_cros.json", preprocess_pose)
+        save_preprocessed_pose_to_file("data/cache/N_action_0.json", preprocess_pose)
 
         ue_socket = create_unreal_sender_socket()
         visualizer = Pose3DVisualizer()

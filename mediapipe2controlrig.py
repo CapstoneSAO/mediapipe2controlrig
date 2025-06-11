@@ -1,5 +1,6 @@
 from typing import Dict, List
 from copy import deepcopy
+import math
 
 import numpy
 import numpy as np
@@ -464,6 +465,41 @@ def calculate_leg_l_ik_ctrls(keypoints: np.ndarray):
         }
     }
 
+def calculate_body_ctrl_rotator(keypoints: np.ndarray) -> list[float]:
+    """
+    依照 UE5 左手座標系產生 [Roll, Pitch, Yaw]：
+      • 往前鞠躬  →  [ +90,   0,   0 ]
+      • 右側身    →  [   0, +90,   0 ]
+      • 左側身    →  [   0, -90,   0 ]
+    """
+    # ── 1. 取軀幹「上」向量（髖 → 肩） ────────────────────────
+    LS, RS = (keypoints[PoseLandmark.LEFT_SHOULDER.value],
+              keypoints[PoseLandmark.RIGHT_SHOULDER.value])
+    LH, RH = (keypoints[PoseLandmark.LEFT_HIP.value],
+              keypoints[PoseLandmark.RIGHT_HIP.value])
+
+    shoulder_mid = (LS + RS) * 0.5
+    hip_mid      = (LH + RH) * 0.5
+
+    v_up = shoulder_mid - hip_mid
+    v_up /= (np.linalg.norm(v_up) + 1e-8)        # 單位化
+
+    # ── 2. 直接用幾何關係取 Roll / Pitch ────────────────────
+    #     • Roll  = ↑ 在 YZ 平面內與 +Z 的夾角（前後彎）
+    #     • Pitch = ↑ 在 XZ 平面內與 +Z 的夾角（左右倒）
+    roll  = math.degrees(math.atan2(-v_up[1], v_up[2]))   # 正數 = 往前鞠躬
+
+    # Pitch / Yaw 方向在 UE 裡剛好是符合的，先維持原邏輯
+    pitch = math.degrees(math.atan2(v_up[0], v_up[2]))    # +90 右倒、-90 左倒
+
+    x_axis = LS - RS
+    x_axis /= (np.linalg.norm(x_axis) + 1e-8)
+    fwd    = np.cross(v_up, x_axis)
+
+    fwd   /= (np.linalg.norm(fwd) + 1e-8)
+    yaw    = math.degrees(math.atan2(fwd[0], fwd[1]))     # 軀幹扭腰
+
+    return [roll, pitch, yaw]
 
 def calculate_control_rig_rotators(keypoints: np.ndarray, datum_points: np.array=None) -> Dict[str, List[float]]:
     rotator = deepcopy(default_rotators)
@@ -483,6 +519,8 @@ def calculate_control_rig_rotators(keypoints: np.ndarray, datum_points: np.array
     # rotator["foot_l_ik_ctrl"] = leg_l_ctrls["foot_l_ik_ctrl"]["rotator"]
     rotator["foot_l_ik_ctrl_pos"] = leg_l_ctrls["foot_l_ik_ctrl"]["location"]
     # rotator["leg_l_pv_ik_ctrl_pos"] = leg_l_ctrls["leg_l_pv_ik_ctrl"]["location"]
+
+    rotator["body_ctrl"] = calculate_body_ctrl_rotator(keypoints)
 
     if datum_points is not None:
         hip = keypoints[PoseLandmark.LEFT_HIP.value] + keypoints[PoseLandmark.RIGHT_HIP.value]
