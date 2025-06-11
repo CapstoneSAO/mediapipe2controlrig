@@ -232,67 +232,6 @@ def calculate_upperarm_l_fk_ctrl_rotators(keypoints: np.ndarray) -> List[float]:
     q_total = _quat_mul(q_offset, q_anim)
     return _quat_to_euler_xyz_lhs(q_total)
 
-_rest_q = {"R": None, "L": None}
-_vel_buf = {"R": [], "L": []}      # 簡單平均速度緩衝
-VEL_THR  = 0.01                    # 四元數 L2 範數
-REST_FR  = 10                      # 連續靜止幀數
-_prev_v_up = {"R": None, "L": None}
-
-def _update_q_rest(side: str, q_rel: np.ndarray, v_up_curr: np.ndarray):
-    """
-    只有「前臂幾乎不動」且「上臂也幾乎不動」時，
-    才把目前 q_rel 記為靜止肘角。
-    """
-    buf = _vel_buf[side]
-    buf.append(q_rel)
-    if len(buf) > REST_FR: buf.pop(0)
-
-    #―― 檢查兩種速度 ――#
-    if len(buf) == REST_FR:
-        slow_rel = all(np.linalg.norm(buf[i]-buf[i-1]) < VEL_THR for i in range(1, REST_FR))
-        # 用上一幀的 v_up (存在 _prev_v_up[side]) 判斷上臂是否也很穩
-        prev_up = _prev_v_up[side]
-        slow_up = np.linalg.norm(v_up_curr - prev_up) < 0.02 if prev_up is not None else False
-        if slow_rel and slow_up:
-            _rest_q[side] = q_rel.copy()
-    _prev_v_up[side] = v_up_curr.copy()
-    
-def quat_offset_AT(v_upper: np.ndarray, deg=-35.0) -> np.ndarray:
-    """沿 v_upper 本身旋轉 deg°（左手座標）。"""
-    v = v_upper / (np.linalg.norm(v_upper) + 1e-8)
-    half = np.deg2rad(deg) * 0.5
-    return np.concatenate([[np.cos(half)],  np.sin(half) * v])
-
-def quat_from_forward_up_lhs(f: np.ndarray, u_raw: np.ndarray) -> np.ndarray:
-    """左手座標系專用：x=f, y=u, z= x×y  (注意外積順序)"""
-    f = f / (np.linalg.norm(f) + 1e-8)
-
-    # 先讓 u 與 f 正交，避免退化
-    u = u_raw - f * np.dot(u_raw, f)
-    if np.linalg.norm(u) < 1e-6:                 # 幾乎共線時兜底
-        u = np.array([0.0, 0.0, 1.0]) - f * f[2]
-    u /= np.linalg.norm(u) + 1e-8
-
-    # 左手系 z = u × f   (反過來！)
-    z = np.cross(u, f)
-    z /= np.linalg.norm(z) + 1e-8
-
-    # 按列組 rotation matrix：X|Y|Z
-    R = np.column_stack([f, u, z])
-
-    # 從矩陣轉四元數（左手／Hamilton 規則）
-    w = np.sqrt(max(0.0, 1.0 + np.trace(R))) / 2.0
-    q = np.array([
-        w,
-        (R[2,1] - R[1,2]) / (4*w + 1e-8),
-        (R[0,2] - R[2,0]) / (4*w + 1e-8),
-        (R[1,0] - R[0,1]) / (4*w + 1e-8),
-    ])
-    return q / (np.linalg.norm(q) + 1e-8)
-
-_prev_n_R = None   # 上一幀的 right-forearm 法向量
-HEMI_AXIS  = np.array([0, 0, 1])   # 用世界 +Z 當參考軸，或換成你的胸腔 y
-
 def quat_from_forward_up(f: np.ndarray, u_raw: np.ndarray) -> np.ndarray:
     f = f / (np.linalg.norm(f) + 1e-8)
 
@@ -312,66 +251,130 @@ def quat_from_forward_up(f: np.ndarray, u_raw: np.ndarray) -> np.ndarray:
     ])
     return q / (np.linalg.norm(q)+1e-8)
 
-Q_OFF_L = _quat_from_axis_angle(np.array([0,0,1]), -35.0)   # 左臂
-Q_OFF_R = _quat_from_axis_angle(np.array([0,0,1]), -35.0)   # 右臂
 def calculate_lowerarm_r_fk_ctrl_rotators(kp: np.ndarray) -> List[float]:
-    sh, el, wr = (kp[PoseLandmark.RIGHT_SHOULDER.value],
-                  kp[PoseLandmark.RIGHT_ELBOW.value],
-                  kp[PoseLandmark.RIGHT_WRIST.value])
+    """
+    右下臂 FK Ctrl Rotator  (左手座標 X-Roll, Y-Pitch, Z-Yaw)
+    固定外旋 offset (0, 0, -35)
+    """
+    # 1. 取三個關鍵點座標
+    S = kp[PoseLandmark.RIGHT_SHOULDER.value]
+    E = kp[PoseLandmark.RIGHT_ELBOW.value]
+    W = kp[PoseLandmark.RIGHT_WRIST.value]
 
-    T = torso_basis_stable(kp)
-    chestX = T[:, 0]                  # → 角色左側
+    # 2. 骨長
+    L1 = np.linalg.norm(E - S)    # upper-arm length
+    L2 = np.linalg.norm(W - E)    # fore-arm length
 
-    v_up  = T.T @ (el - sh); v_up /= np.linalg.norm(v_up)+1e-8
-    v_fr  = T.T @ (wr - el); v_fr /= np.linalg.norm(v_fr)+1e-8
+    # 3. 胸腔基底 & 上臂當前朝向
+    T   = torso_basis_stable(kp)
+    v_up = v_norm(T.T @ (E - S))                     # chest-space 上臂向量
 
-    # v_fr, _ = _stabilise_forearm(v_fr, v_up, side='R')
+    # 4. 上臂當前旋轉 (未加 offset)
+    q_shoulder = q_between(np.array([-1.,0.,0.]), v_up)
 
-    n = np.cross(v_up, v_fr)             # 左手系：u × f
-    if np.dot(n, chestX) > 0:
-        v_fr = -v_fr
-        n    = -n                      
+    # 5. 兩骨 IK 解
+    bend_dir_local = np.array([0,0,-1])              # 右臂肘尖朝本地 -Z
+    torso_right    = -T[:,0]                         # 角色右側 = −chestX
+    _, q_fore = solve_two_bone_IK(
+        S, W, L1, L2,
+        shoulder_q = q_shoulder,
+        B_local    = bend_dir_local,
+        torso_right = torso_right
+    )
 
-    # ── 1 上臂四元數：T-Pose → v_up
-    v_ref = np.array([-1,0,0])
-    q_up  = _quat_between(v_ref, v_up)
+    # 6. 轉成 UE Rotator (X Y Z, 左手)
+    return q_to_euler_xyz_lhs(q_fore).tolist()
 
-    # ── 2 前臂四元數：用 forward+up 唯一化
-    q_fr  = quat_from_forward_up_lhs(v_fr, v_up)
+def v_norm(v):            return v / (np.linalg.norm(v)+1e-8)
+def q_axis_angle(axis, d):  # 左手系四元數 (w,x,y,z)
+    a = v_norm(axis); h = np.deg2rad(d)*0.5
+    return np.concatenate([[np.cos(h)], np.sin(h)*a])
+def q_mul(a,b):
+    w1,x1,y1,z1=a; w2,x2,y2,z2=b
+    return np.array([
+        w1*w2-x1*x2-y1*y2-z1*z2,
+        w1*x2+x1*w2+y1*z2-z1*y2,
+        w1*y2-x1*z2+y1*w2+z1*x2,
+        w1*z2+x1*y2-y1*x2+z1*w2])
+def q_between(f,t):                 # 單位四元數：f→t
+    f=v_norm(f); t=v_norm(t); d=f@t
+    if d<-0.999999:
+        axis=v_norm(np.cross(f,[1,0,0]) or np.cross(f,[0,1,0]))
+        return np.array([0,*axis])
+    q=np.array([1+d,*np.cross(f,t)])
+    return v_norm(q)
+def q_to_euler_xyz_lhs(q):
+    w,x,y,z=q
+    roll=np.degrees(np.arctan2(2*(w*x+y*z),1-2*(x*x+y*y)))
+    pitch=np.degrees(np.arcsin(np.clip(2*(w*y-z*x),-1,1)))
+    yaw=-np.degrees(np.arctan2(2*(w*z+x*y),1-2*(y*y+z*z)))
+    return np.array([roll,pitch,yaw])
 
-    # ── 3 相對旋轉
-    q_rel = _quat_mul(_quat_inv(q_up), q_fr)
+# －－－－ 主：兩骨解析 IK －－－－
+def solve_two_bone_IK(S,T,L1,L2,shoulder_q,B_local,torso_right=np.array([0,1,0])):
+    D   = T-S;  d=np.linalg.norm(D)
+    d   = np.clip(d, abs(L1-L2), L1+L2)
+    Dn  = D/(d+1e-8)
 
-    # ── 4 扣靜止肘角
-    _update_q_rest("R", q_rel, v_up)
-    if _rest_q["R"] is None:
-        q_dyn = q_rel.copy()
-    else:
-        q_dyn = _quat_mul(q_rel, _quat_inv(_rest_q["R"]))
-    # ── 5 A→T offset & 回傳
-    q_off = quat_offset_AT(v_up, -35.0)
-    q_tot = _quat_mul(q_off, q_dyn)
-    return _quat_to_euler_xyz_lhs(q_tot)
+    PV  = v_norm(q_mul(shoulder_q, np.array([0,*B_local]))[1:])
+    if abs(Dn@PV)>0.999:  PV=np.array([0,0,1])
+    N   = v_norm(np.cross(Dn,PV))
+    if N@torso_right<0:   N=-N
+    Pdir= np.cross(N,Dn)
+
+    a   = (L1*L1-L2*L2+d*d)/(2*d)
+    h2  = L1*L1-a*a; h = np.sqrt(max(h2,0))
+    E   = S + Dn*a + Pdir*h
+
+    # 上臂旋轉
+    upper_dir = v_norm(E-S)
+    q_up_no   = q_between(np.array([1,0,0]), upper_dir)
+    # 讓本地Y盡量對平面法線
+    upY_world = v_norm(N - (N@upper_dir)*upper_dir)
+    q_alignY  = q_between(q_mul(q_up_no, np.array([0,0,1,0]))[1:], upY_world)
+    q_up_no   = q_mul(q_alignY, q_up_no)
+    q_up      = q_mul(q_up_no, q_axis_angle(np.array([0,1,0]), 55))   # 上臂偏移
+
+    # 前臂旋轉（相對）
+    fore_dir  = v_norm(T-E)
+    # 投到上臂局部空間
+    X=upper_dir;  Z=v_norm(np.cross(X,upY_world)); Y=np.cross(Z,X)
+    M=np.column_stack([X,Y,Z])   # chest→upperLocal
+    fore_L = M.T@fore_dir
+    q_rel  = q_between(np.array([1,0,0]), fore_L)
+    q_fore = q_mul(q_rel, q_axis_angle(np.array([1,0,0]), -35))       # 前臂偏移
+
+    return q_up, q_fore
 
 def calculate_lowerarm_l_fk_ctrl_rotators(kp: np.ndarray) -> List[float]:
-    sh, el, wr = (kp[PoseLandmark.LEFT_SHOULDER.value],
-                  kp[PoseLandmark.LEFT_ELBOW.value],
-                  kp[PoseLandmark.LEFT_WRIST.value])
+    S = kp[PoseLandmark.LEFT_SHOULDER.value]   # Shoulder
+    E = kp[PoseLandmark.LEFT_ELBOW.value]      # Elbow
+    W = kp[PoseLandmark.LEFT_WRIST.value]      # Wrist
 
-    T = torso_basis_stable(kp)
-    v_upper = T.T @ (el - sh); v_upper /= np.linalg.norm(v_upper)+1e-8
-    v_fore  = T.T @ (wr - el); v_fore  /= np.linalg.norm(v_fore)+1e-8
+    # ── 骨長 ──────────────────────────────────
+    L1 = np.linalg.norm(E - S)   # 上臂長
+    L2 = np.linalg.norm(W - E)   # 前臂長
 
-    v_ref = np.array([+1.0, 0.0, 0.0])
-    q_upper = _quat_between(v_upper, v_ref)
-    q_fore = quat_from_forward_up(v_fore, v_upper) 
+    # ── 胸腔穩定基底 & 上臂旋轉 ────────────────
+    T = torso_basis_stable(kp)                 # 3×3
+    v_up = v_norm(T.T @ (E - S))
+    # 上臂四元數（+X → v_up），再套 offset(0,55,0)
+    q_up_no = q_between(np.array([1.,0.,0.]), v_up)
+    q_up    = q_mul(q_up_no, q_axis_angle(np.array([0,1,0]), 55.0))
 
-    # q_upper = _quat_between(v_upper, v_ref)
-    # q_fore  = _quat_between(v_fore, v_ref)
-    q_rel   = _quat_mul(_quat_inv(q_upper), q_fore)
+    # ── Solve Two-Bone IK ─────────────────────
+    bend_dir_local = np.array([0,0,1])         # 左臂初始肘尖朝 +Z
+    torso_left  = -T[:,1]                      # 角色左側 = chest -Y
+    q_up_final, q_fore = solve_two_bone_IK(
+        S, W, L1, L2,
+        shoulder_q=q_up,
+        B_local=bend_dir_local,
+        torso_right=torso_left                 # 左臂外側 = -chestY
+    )
 
-    q_total = _quat_mul(Q_OFF_L, q_rel)
-    return _quat_to_euler_xyz_lhs(q_total)
+    # ── 轉成 Euler Rotator (X-Y-Z, 左手) ───────
+    rotFore = q_to_euler_xyz_lhs(q_fore).tolist()
+    return rotFore
 
 def _build_rotation_from_axes(x_axis, z_axis):
     x = x_axis / (np.linalg.norm(x_axis) + 1e-8)
