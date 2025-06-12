@@ -200,7 +200,7 @@ def play_frame_from_udp(camera_socket, unreal_socket=None, ctrl_queue=None):
             # control_rig_rotators = calculate_control_rig_rotators(unreal_keypoints,
             #                                                       datum_points=hip_datum_points)  # Using unreal coordinates
 
-            ik_landmarks = gen_ik_landmarks(unreal_keypoints)
+            ik_landmarks = gen_ik_landmarks(normalized_keypoints)
             payload = {"ControlRigRotators": ik_landmarks, "ControlRig": ik_landmarks}
             packet = PoseObject(payload).packet
 

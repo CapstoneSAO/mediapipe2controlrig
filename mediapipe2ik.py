@@ -33,4 +33,7 @@ def gen_ik_landmarks(keypoints: np.ndarray) -> Dict[str, List[float]]:
     ik["r_knee"] = mp_to_ue(keypoints[PoseLandmark.RIGHT_KNEE.value])
     ik["l_hip"] = mp_to_ue(keypoints[PoseLandmark.LEFT_HIP.value])
     ik["r_hip"] = mp_to_ue(keypoints[PoseLandmark.RIGHT_HIP.value])
+
+    for item in ik:
+        ik[item] = ik[item].tolist()
     return ik
