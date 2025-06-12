@@ -2,6 +2,10 @@ import json
 import struct
 from typing import List, Dict, Any
 from copy import deepcopy
+import socket
+import threading
+import queue          # Python 標準函式庫
+import time
 
 import numpy as np
 from loguru import logger
@@ -20,6 +24,60 @@ from utils import (
     ILLEGAL_PTS_33_KEYPOINTS
 )
 
+CTRL_HOST = "0.0.0.0"
+CTRL_PORT = 9001
+
+ctrl_queue: queue.Queue[bytes] = queue.Queue(maxsize=32)   # 佇列大小可自行調整
+
+def recv_exact(sock, nbytes):
+    """阻塞讀取 nbytes；若連線中斷則回傳 None"""
+    buf = bytearray()
+    while len(buf) < nbytes:
+        chunk = sock.recv(nbytes - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def tcp_receiver(q: queue.Queue, host=CTRL_HOST, port=CTRL_PORT):
+    """持續接收 TCP 資料並放進 queue；連線中斷就自動重連。"""
+    while True:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # sock.setblocking(True)                 # 阻塞式即可，反正放在 thread 裡
+            # sock.connect((host, port))
+            sock.bind((host, port))
+            sock.listen(1)
+            logger.info(f"[TCP] Connected {host}:{port}")
+            conn, addr = sock.accept()
+            while True:
+                # data = sock.recv(4096)
+                hdr = recv_exact(conn, 4)
+                if hdr is None:
+                    print("[Python] Converter 斷線")
+                    break
+
+                body_len = struct.unpack(">I", hdr)[0]
+                body = recv_exact(conn, body_len)
+
+                if body is None:
+                    print("[Python] Converter 斷線")
+                    break
+
+                try:
+                    obj = json.loads(body.decode("utf‑8").strip('\x00\r\n\t '))
+                except Exception as e:
+                    print("[Python] JSON 解析失敗：", e)
+                    continue
+
+                logger.info(f"[TCP] Received {obj} from {addr}")
+                q.put(obj, block=False)           # 滿了就丟掉舊資料也行
+        except Exception as e:
+            logger.warning(f"[TCP] {e} → reconnect in 2 s")
+            sock.close()
+            time.sleep(2)
 
 def load_pose_frames_from_file(path: str, ignore_illegal=True) -> List[np.ndarray]:
     frames: List[np.ndarray] = []
@@ -100,9 +158,21 @@ def play_frames_from_preprocessed_pose(pose_visualizer: Pose3DVisualizer, frames
                     return
         looping = repeat
 
-def play_frame_from_udp(camera_socket, unreal_socket=None):
+def play_frame_from_udp(camera_socket, unreal_socket=None, ctrl_queue=None):
     hip_datum_points = None
+    last_signal = None
     while True:
+        if ctrl_queue is not None:
+
+            try:
+                raw = ctrl_queue.get_nowait()  # 不阻塞；沒資料就丟 queue.Empty
+                logger.debug(f"[TCP] 收到控制訊息: {raw}")
+                last_signal = raw['signal']
+                print(f"[{last_signal}]")
+                # TODO: 依 ctrl_msg 更新 hip_datum_points、濾波器…等
+            except queue.Empty:
+                pass
+
         try:
             data, _ = camera_socket.recvfrom(65536)
         except BlockingIOError:
@@ -114,10 +184,14 @@ def play_frame_from_udp(camera_socket, unreal_socket=None):
         try:
             msg = json.loads(data.decode())
             keypoints = np.asarray(msg["keypoints_3d"], dtype=msg["dtype"]).reshape((-1, 3))
+            print(keypoints.tolist(), file=open("keypoints.txt", "a+"))
 
             normalized_keypoints, hip_offset, ground_offset = normalize_frame(keypoints)
-            unreal_keypoints = mediapipe_to_unreal(normalized_keypoints)
-            if hip_datum_points is None:
+            
+            unreal_keypoints = mediapipe_to_unreal(normalized_keypoints, facing=("-Z", "+X", "+Y"))
+            
+            if (hip_datum_points is None) or (last_signal == "reset"):
+                last_signal = None
                 logger.info(f"Hip datum points initialize: {hip_datum_points}")
                 hip_datum_points = get_datum_point(unreal_keypoints, datum_point="hip")
 
@@ -125,7 +199,7 @@ def play_frame_from_udp(camera_socket, unreal_socket=None):
                                                                   datum_points=hip_datum_points)  # Using unreal coordinates
 
             payload = {"ControlRigRotators": control_rig_rotators, "ControlRig": control_rig_rotators}
-            logger.info(f"Control Rig Rotators: {control_rig_rotators}")
+            # logger.info(f"Control Rig Rotators: {control_rig_rotators}")
             packet = PoseObject(payload).packet
 
             if unreal_socket:
@@ -133,8 +207,8 @@ def play_frame_from_udp(camera_socket, unreal_socket=None):
                     unreal_socket.sendall(packet)
                 except Exception as e:
                     print("[Camera] Error sending data to Unreal:", e)
-                    unreal_socket.close()
-                    return
+                    unreal_socket = create_unreal_sender_socket()
+                    # return
 
         except Exception as e:
             print("[Camera] JSON parse err:", e)
@@ -144,10 +218,31 @@ def play_frame_from_udp(camera_socket, unreal_socket=None):
 # 🏁  Main demo
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    FILE = "data/N_hip_with_normal_action.csv"
+    import sys
+    mode = sys.argv[1] if len(sys.argv) > 1 else "play"
 
-    preprocess_pose = preprocess_pose_file(FILE)
-    save_preprocessed_pose_to_file("data/cache/N_hip_with_normal_action.json", preprocess_pose)
+    if mode not in ["play", "preprocess"]:
+        print("Usage: python main.py [play|preprocess]")
+        sys.exit(1)
+
+    threading.Thread(target=tcp_receiver,
+                     args=(ctrl_queue,),
+                     daemon=True).start()
+
+    if mode == "play":
+        camera_socket = create_camera_socket()
+        unreal_socket = create_unreal_sender_socket()
+
+        play_frame_from_udp(camera_socket, unreal_socket, ctrl_queue)
+
+        camera_socket.close()
+        unreal_socket.close()
+
+    elif mode == "preprocess":
+        FILE = "data/N_hand_cros.csv"
+
+        preprocess_pose = preprocess_pose_file(FILE)
+        save_preprocessed_pose_to_file("data/cache/N_hand_cros.json", preprocess_pose)
 
         ue_socket = create_unreal_sender_socket()
         visualizer = Pose3DVisualizer()
@@ -155,6 +250,5 @@ if __name__ == "__main__":
         play_frames_from_preprocessed_pose(visualizer, preprocess_pose, fps=240, repeat=True, socket=ue_socket)
 
         ue_socket.close()
-
 
 
