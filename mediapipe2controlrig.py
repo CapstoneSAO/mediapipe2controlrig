@@ -29,6 +29,10 @@ default_rotators = {
         "foot_l_ik_ctrl_pos": [0.0, 0.0, 0.0],  # Position for IK Foot Control
     }
 
+# default_ik_position = {
+    
+# }
+
 t_pose_rotators_offsets = {
     "upperarm_r_fk_ctrl": [0.0, 55.0, 0.0],
     "upperarm_l_fk_ctrl": [0.0, 55.0, 0.0],
