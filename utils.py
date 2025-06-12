@@ -43,7 +43,6 @@ def add_in_element_wise(lst: list[float], add: list[float]) -> list[float]:
     return [x + y for x, y in zip(lst, add)]
 
 def mediapipe_to_unreal(keypoints: np.ndarray) -> np.ndarray:
-    keypoints *= 100  # Convert to centimeters
     return np.array([[-z, x, y] for x, y, z in keypoints])
 
 def get_datum_point(keypoints: np.ndarray, datum_point: str = "hip") -> np.ndarray:

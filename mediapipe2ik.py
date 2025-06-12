@@ -4,43 +4,33 @@ import numpy
 import numpy as np
 from mediapipe.python.solutions.pose import PoseLandmark
 
+SCALE_CM = 100.0           
+CHAR_SCALE = 0.92 
 
-default_ik_landmarks = {
-        "htp":      [0.0, 0.0, 0.0],
-        "nose":     [0.0, 0.0, 0.0],
-        "neck":     [0.0, 0.0, 0.0],
-        "l_writ":   [0.0, 0.0, 0.0],
-        "r_writ":   [0.0, 0.0, 0.0],
-        "l_elb":    [0.0, 0.0, 0.0],
-        "r_elb":    [0.0, 0.0, 0.0],
-        "l_sh":     [0.0, 0.0, 0.0],
-        "r_sh":     [0.0, 0.0, 0.0],
-        "l_ank":    [0.0, 0.0, 0.0],
-        "r_ank":    [0.0, 0.0, 0.0],
-        "l_knee":   [0.0, 0.0, 0.0],
-        "r_knee":   [0.0, 0.0, 0.0],
-        "l_hip":    [0.0, 0.0, 0.0],
-        "r_hip":    [0.0, 0.0, 0.0], 
-    }
-
+def mp_to_ue(v: np.ndarray) -> List[float]:
+    return [-v[2] * SCALE_CM * CHAR_SCALE,
+             v[0] * SCALE_CM * CHAR_SCALE,
+             v[1] * SCALE_CM * CHAR_SCALE]
 
 def gen_ik_landmarks(keypoints: np.ndarray) -> Dict[str, List[float]]:
-    ik_landmarks = default_ik_landmarks.copy()
-
-    ik_landmarks["htp"] = (keypoints[PoseLandmark.LEFT_HIP.value] + keypoints[PoseLandmark.RIGHT_HIP.value]) / 2.0
-    ik_landmarks["neck"] = (keypoints[PoseLandmark.LEFT_SHOULDER.value] + keypoints[PoseLandmark.RIGHT_SHOULDER.value]) / 2.0
-    ik_landmarks["nose"] = keypoints[PoseLandmark.NOSE.value]
-    ik_landmarks["l_writ"] = keypoints[PoseLandmark.LEFT_WRIST.value]
-    ik_landmarks["r_writ"] = keypoints[PoseLandmark.RIGHT_WRIST.value]
-    ik_landmarks["l_elb"] = keypoints[PoseLandmark.LEFT_ELBOW.value]
-    ik_landmarks["r_elb"] = keypoints[PoseLandmark.RIGHT_ELBOW.value]
-    ik_landmarks["l_sh"] = keypoints[PoseLandmark.LEFT_SHOULDER.value]
-    ik_landmarks["r_sh"] = keypoints[PoseLandmark.RIGHT_SHOULDER.value]
-    ik_landmarks["l_ank"] = keypoints[PoseLandmark.LEFT_ANKLE.value]
-    ik_landmarks["r_ank"] = keypoints[PoseLandmark.RIGHT_ANKLE.value]
-    ik_landmarks["l_knee"] = keypoints[PoseLandmark.LEFT_KNEE.value]
-    ik_landmarks["r_knee"] = keypoints[PoseLandmark.RIGHT_KNEE.value]
-    ik_landmarks["l_hip"] = keypoints[PoseLandmark.LEFT_HIP.value]
-    ik_landmarks["r_hip"] = keypoints[PoseLandmark.RIGHT_HIP.value]
-
-    return ik_landmarks
+    ik = {}                                   # 新建而非 copy 舊字典
+    hip_mid = (keypoints[PoseLandmark.LEFT_HIP.value] +
+               keypoints[PoseLandmark.RIGHT_HIP.value]) / 2.0
+    
+    ik["hip"]  = mp_to_ue(hip_mid)
+    ik["neck"] = mp_to_ue((keypoints[PoseLandmark.LEFT_SHOULDER.value] +
+                          keypoints[PoseLandmark.RIGHT_SHOULDER.value]) / 2.0)
+    ik["nose"] = mp_to_ue(keypoints[PoseLandmark.NOSE.value])
+    ik["l_writ"] = mp_to_ue(keypoints[PoseLandmark.LEFT_WRIST.value])
+    ik["r_writ"] = mp_to_ue(keypoints[PoseLandmark.RIGHT_WRIST.value])
+    ik["l_elb"] = mp_to_ue(keypoints[PoseLandmark.LEFT_ELBOW.value])
+    ik["r_elb"] = mp_to_ue(keypoints[PoseLandmark.RIGHT_ELBOW.value])
+    ik["l_sh"] = mp_to_ue(keypoints[PoseLandmark.LEFT_SHOULDER.value])
+    ik["r_sh"] = mp_to_ue(keypoints[PoseLandmark.RIGHT_SHOULDER.value])
+    ik["l_ank"] = mp_to_ue(keypoints[PoseLandmark.LEFT_ANKLE.value])
+    ik["r_ank"] = mp_to_ue(keypoints[PoseLandmark.RIGHT_ANKLE.value])
+    ik["l_knee"] = mp_to_ue(keypoints[PoseLandmark.LEFT_KNEE.value])
+    ik["r_knee"] = mp_to_ue(keypoints[PoseLandmark.RIGHT_KNEE.value])
+    ik["l_hip"] = mp_to_ue(keypoints[PoseLandmark.LEFT_HIP.value])
+    ik["r_hip"] = mp_to_ue(keypoints[PoseLandmark.RIGHT_HIP.value])
+    return ik
